@@ -1,0 +1,25 @@
+# Builds the Windows installer on GitHub's Windows runners, so no Windows
+# machine is needed locally. Push the repo to GitHub, then download
+# "Mall Audio Scheduler Setup.exe" from the workflow's artifacts.
+name: Windows installer
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[build]"
+      - run: python scripts/build.py
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Build installer
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\windows.iss'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mall-Audio-Scheduler-Windows-Setup
+          path: dist/Mall Audio Scheduler Setup.exe
