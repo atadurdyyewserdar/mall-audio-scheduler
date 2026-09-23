@@ -11,6 +11,11 @@ class AudioItem:
     name: str
     path: Path
     kind: str
+    # Per-recording trim in dB, applied on top of the master volume slider.
+    # Positive values are of limited use above 0 dB: playback volume cannot
+    # exceed the device's unity gain, so boosting a quiet recording only helps
+    # while the master slider still has headroom below 100%.
+    gain_db: float = 0.0
 
 
 @dataclass(frozen=True)

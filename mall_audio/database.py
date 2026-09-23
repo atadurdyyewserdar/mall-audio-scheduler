@@ -65,6 +65,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS audio_items_kind ON audio_items(kind, name);
         """)
         self._add_playlist_order()
+        self._add_gain_column()
         self._adopt_per_recording_rules()
         self.connection.commit()
 
@@ -103,6 +104,13 @@ class Database:
                 "UPDATE audio_items SET position = ? WHERE id = ?",
                 [(index, row["id"]) for index, row in enumerate(rows)],
             )
+
+    def _add_gain_column(self) -> None:
+        """Give existing installs the per-recording volume trim column."""
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(audio_items)")}
+        if "gain_db" in columns:
+            return
+        self.connection.execute("ALTER TABLE audio_items ADD COLUMN gain_db REAL NOT NULL DEFAULT 0.0")
 
     def add_audio(self, path: str, kind: str) -> int:
         return self.add_audio_batch([path], kind)
@@ -172,7 +180,12 @@ class Database:
         rows = self.connection.execute(
             "SELECT * FROM audio_items WHERE kind = ? ORDER BY position, name", (kind,)
         ).fetchall()
-        return [AudioItem(r["id"], r["name"], Path(r["path"]), r["kind"]) for r in rows]
+        return [AudioItem(r["id"], r["name"], Path(r["path"]), r["kind"], r["gain_db"]) for r in rows]
+
+    def set_audio_gain(self, item_id: int, gain_db: float) -> None:
+        self.connection.execute("UPDATE audio_items SET gain_db = ? WHERE id = ?", (gain_db, item_id))
+        self.connection.commit()
+        self.catalog_revision += 1
 
     def reorder_audio(self, kind: str, ordered_ids: list[int]) -> None:
         """Persist a hand-dragged playlist order."""

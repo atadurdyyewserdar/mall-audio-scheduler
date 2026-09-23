@@ -177,8 +177,12 @@ class AudioController(QObject):
         # Whether the ad on air was started by hand. A scheduled ad is never cut
         # short by a manual one; a manual one is.
         self._current_is_manual = False
-        # (path, started by hand) - queued ads keep that distinction too.
-        self._announcement_queue: deque[tuple[Path, bool]] = deque()
+        # The per-recording trim (dB) applied on top of the master announcement
+        # volume for whichever item is on air, so it can be re-combined whenever
+        # either one changes.
+        self._current_gain_db = 0.0
+        # (path, started by hand, its gain in dB) - queued ads keep both too.
+        self._announcement_queue: deque[tuple[Path, bool, float]] = deque()
         self.music_volume = 0.55
         self.announcement_volume = 0.85
         self.duck_music = True
@@ -229,13 +233,38 @@ class AudioController(QObject):
         self.announcement_volume = announcement_volume
         self.duck_music = duck_music
         self.fade_duration_ms = fade_duration_ms
-        self.announcement_output.setVolume(announcement_volume)
+        self._apply_announcement_volume()
         if not self.paused_for_announcement:
             self.music_output.setVolume(music_volume)
 
     def set_announcement_volume(self, volume: float) -> None:
         self.announcement_volume = max(0.0, min(1.0, volume))
-        self.announcement_output.setVolume(self.announcement_volume)
+        self._apply_announcement_volume()
+
+    def set_announcement_gain(self, gain_db: float) -> None:
+        """Re-trim whichever recording is currently on air.
+
+        Queued ads carry the trim they had when the batch was scheduled, so
+        without this an edit made while an earlier ad in that same batch is
+        still playing would not reach the ones queued behind it - they would
+        play at whatever was saved at the moment the rule fired, not the fix
+        made seconds later. The caller re-applies the live value right as each
+        queued item actually starts (on announcement_started), which is the
+        same fix applied a second, earlier time for the common case too.
+        """
+        self._current_gain_db = gain_db
+        self._apply_announcement_volume()
+
+    def _apply_announcement_volume(self) -> None:
+        """Master volume combined with whichever recording is on air's own trim.
+
+        Re-applied whenever either changes, so turning the master slider while
+        a quiet or loud recording is playing keeps their relative balance.
+        Volume cannot exceed the device's unity gain, so a positive trim only
+        has room to work while the master slider is below 100%.
+        """
+        factor = 10 ** (self._current_gain_db / 20)
+        self.announcement_output.setVolume(max(0.0, min(1.0, self.announcement_volume * factor)))
 
     def stop_announcement(self) -> None:
         """Cut the announcement short by hand, and bring the music back.
@@ -414,7 +443,7 @@ class AudioController(QObject):
     def queued_announcements(self) -> int:
         return len(self._announcement_queue)
 
-    def play_announcement(self, path: Path, manual: bool = False) -> bool:
+    def play_announcement(self, path: Path, manual: bool = False, gain_db: float = 0.0) -> bool:
         if not path.exists():
             return False
         if manual:
@@ -423,7 +452,7 @@ class AudioController(QObject):
                 # A scheduled ad is on air. It is not cut short for a hand-played
                 # one: that would be a person interfering with the schedule. The
                 # manual ad goes out right after it, ahead of anything else queued.
-                self._announcement_queue.appendleft((path, True))
+                self._announcement_queue.appendleft((path, True, gain_db))
                 return True
             # A manual ad on air is replaced - that is what pressing play means.
             # The music is treated exactly as for a scheduled ad: held behind the
@@ -436,7 +465,7 @@ class AudioController(QObject):
                 # The music is already parked behind the ad being replaced;
                 # keep that so it still comes back after the new one.
                 self.announcement_pending = True
-                self._start_announcement(path, manual=True)
+                self._start_announcement(path, manual=True, gain_db=gain_db)
                 return True
         if self.announcement_pending or self.announcement_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             # Another ad holds the output.  Two schedules landing in the same
@@ -444,7 +473,7 @@ class AudioController(QObject):
             # heard, so queue it instead of discarding it.
             if len(self._announcement_queue) >= MAX_QUEUED_ANNOUNCEMENTS:
                 return False
-            self._announcement_queue.append((path, manual))
+            self._announcement_queue.append((path, manual, gain_db))
             return True
         self.announcement_pending = True
         self.paused_for_announcement = self.music_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
@@ -452,19 +481,21 @@ class AudioController(QObject):
             # Announcements have exclusive use of the output.  Fade the music
             # out, pause it at its current position, then play exactly one voice
             # recording.  It will resume after the announcement finishes.
-            self._fade_to_volume(0.0, lambda: self._pause_music_and_start_announcement(path, manual))
+            self._fade_to_volume(0.0, lambda: self._pause_music_and_start_announcement(path, manual, gain_db))
             self.status_changed.emit("Background music pausing for announcement")
             return True
-        self._start_announcement(path, manual)
+        self._start_announcement(path, manual, gain_db)
         return True
 
-    def _pause_music_and_start_announcement(self, path: Path, manual: bool = False) -> None:
+    def _pause_music_and_start_announcement(self, path: Path, manual: bool = False, gain_db: float = 0.0) -> None:
         self.music_player.pause()
-        self._start_announcement(path, manual)
+        self._start_announcement(path, manual, gain_db)
 
-    def _start_announcement(self, path: Path, manual: bool = False) -> None:
+    def _start_announcement(self, path: Path, manual: bool = False, gain_db: float = 0.0) -> None:
         self.current_announcement = path
         self._current_is_manual = manual
+        self._current_gain_db = gain_db
+        self._apply_announcement_volume()
         self.announcement_player.setSource(QUrl.fromLocalFile(str(path)))
         self.announcement_player.play()
         self.status_changed.emit("Announcement playing")
@@ -512,13 +543,14 @@ class AudioController(QObject):
         if not self._announcement_queue:
             return False
         self.announcement_pending = True
-        path, manual = self._announcement_queue.popleft()
-        self._start_announcement(path, manual)
+        path, manual, gain_db = self._announcement_queue.popleft()
+        self._start_announcement(path, manual, gain_db)
         return True
 
     def _restore_music(self) -> None:
         self.current_announcement = None
         self._current_is_manual = False
+        self._current_gain_db = 0.0
         if self.paused_for_announcement:
             if self._music_ended_during_announcement:
                 # Resuming a finished file plays nothing, so carry on with the

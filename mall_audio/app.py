@@ -6,7 +6,7 @@ import subprocess
 import re
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +17,7 @@ from PySide6.QtGui import QActionGroup, QBrush, QColor, QDrag, QDragEnterEvent, 
 from PySide6.QtMultimedia import QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
-    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
     QLineEdit, QMenu, QPushButton, QSizePolicy, QSlider, QToolTip, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionComboBox, QStyleOptionSlider, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTimeEdit, QHeaderView,
     QVBoxLayout, QWidget,
 )
@@ -91,6 +91,20 @@ def asset_path(name: str) -> Path:
 def application_data_path() -> Path:
     base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
     return Path(base) / "mall_audio.sqlite3"
+
+
+def make_text_button(icon_name: str, label: str, object_name: str) -> QPushButton:
+    """Labelled action button - an icon alone does not say what it does.
+
+    Module-level rather than a MainWindow method, so dialogs that are not a
+    MainWindow (AudioGainDialog, for one) can build the same style of button.
+    """
+    button = QPushButton(f"  {label}")
+    button.setObjectName(object_name)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setIcon(qta.icon(icon_name, color="#ffffff" if object_name == "primaryAction" else "#4e545c"))
+    button.setAccessibleName(label)
+    return button
 
 
 class DropAudioTable(QTableWidget):
@@ -1645,6 +1659,102 @@ class VoiceAutomationDialog(QDialog):
         super().keyPressEvent(event)
 
 
+class AudioGainDialog(QDialog):
+    """Per-recording volume trim, for the one ad that came out of the mic hot.
+
+    A slider rather than a number entry: the point is to nudge a recording
+    until it sits level with the others by ear, with Preview to check as you
+    go, not to hit an exact decibel figure.
+    """
+
+    MIN_DB, MAX_DB = -24, 6
+
+    def __init__(self, item, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.item = item
+        self.setWindowTitle(tr("Adjust volume"))
+        self.setWindowFlags(Qt.WindowType.Popup)
+        self.setMinimumWidth(360)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(14)
+
+        card = QFrame()
+        card.setObjectName("automationCard")
+        form = QVBoxLayout(card)
+        form.setContentsMargins(20, 17, 20, 18)
+        form.setSpacing(12)
+
+        title = QLabel(tr("Adjust volume"))
+        title.setObjectName("ruleTitle")
+        name = QLabel(self.display_name())
+        name.setObjectName("fieldLabel")
+        name.setWordWrap(True)
+        form.addWidget(title)
+        form.addWidget(name)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(self.MIN_DB, self.MAX_DB)
+        self.slider.setValue(round(max(self.MIN_DB, min(self.MAX_DB, item.gain_db))))
+        self.slider.setTickInterval(6)
+        self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.value_label = QLabel()
+        self.value_label.setObjectName("fieldValue")
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.value_label.setFixedWidth(64)
+        self.slider.valueChanged.connect(self._on_value_changed)
+        slider_row = QHBoxLayout()
+        slider_row.setSpacing(10)
+        slider_row.addWidget(self.slider, 1)
+        slider_row.addWidget(self.value_label)
+        form.addLayout(slider_row)
+        # A positive trim can only push the volume up to unity gain, which is
+        # already spoken for once the master slider is near 100%.
+        hint = QLabel(tr("Turns this recording down (or up, within headroom) relative to the others."))
+        hint.setObjectName("cardHint")
+        hint.setWordWrap(True)
+        form.addWidget(hint)
+        self._on_value_changed(self.slider.value())
+        layout.addWidget(card)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        # quietControl is sized for icon-only buttons (fixed ~25px) and
+        # clipped these labels; quietAction is the labelled-button class the
+        # Settings page uses for the same kind of secondary action.
+        reset = make_text_button("fa5s.undo", tr("Reset"), "quietAction")
+        reset.clicked.connect(lambda: self.slider.setValue(0))
+        preview = make_text_button("fa5s.play", tr("Preview"), "quietAction")
+        preview.clicked.connect(self._preview)
+        save = make_text_button("fa5s.check", tr("Save"), "primaryAction")
+        save.clicked.connect(self.accept)
+        buttons.addWidget(reset)
+        buttons.addWidget(preview)
+        buttons.addStretch()
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+
+    def display_name(self) -> str:
+        return MainWindow.display_name(self.item.name)
+
+    def _on_value_changed(self, value: int) -> None:
+        self.value_label.setText(tr("No change") if value == 0 else f"{value:+d} dB")
+
+    def value(self) -> float:
+        return float(self.slider.value())
+
+    def _preview(self) -> None:
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_preview_announcement_gain"):
+            parent._preview_announcement_gain(self.item, self.value())
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
+
+
 class EvenSplitRow(QWidget):
     """Lays out two columns side by side at an exact 50/50 width split.
 
@@ -1689,6 +1799,10 @@ class MainWindow(QMainWindow):
         self.scheduler = Scheduler(self.database)
         self.current_music_item_id: int | None = None
         self.search_fields: dict[str, QLineEdit] = {}
+        # Set right before a Preview-triggered play, consumed by the very next
+        # announcement_started: tells the live gain-sync to leave THAT one play
+        # at its trial value instead of overwriting it back to the saved one.
+        self._skip_next_gain_sync = False
         self._playback_status = ""
         self._meter_frame = 0
         self._meter_cells: dict[int, tuple] = {}
@@ -1993,14 +2107,6 @@ class MainWindow(QMainWindow):
         button.setAccessibleName(tooltip)
         return button
 
-    def _text_button(self, icon_name: str, label: str, object_name: str) -> QPushButton:
-        """Labelled action button - an icon alone does not say what it does."""
-        button = QPushButton(f"  {label}")
-        button.setObjectName(object_name)
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setIcon(qta.icon(icon_name, color="#ffffff" if object_name == "primaryAction" else "#4e545c"))
-        button.setAccessibleName(label)
-        return button
 
     def _page_layout(self, heading: str, subheading: str) -> QVBoxLayout:
         page = QWidget()
@@ -2449,9 +2555,9 @@ class MainWindow(QMainWindow):
         column.addWidget(self.log_table, 1)
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
-        refresh = self._text_button("fa5s.sync-alt", tr("Refresh"), "quietAction")
+        refresh = make_text_button("fa5s.sync-alt", tr("Refresh"), "quietAction")
         refresh.clicked.connect(self.refresh_logs)
-        export = self._text_button("fa5s.file-export", tr("Export CSV"), "quietAction")
+        export = make_text_button("fa5s.file-export", tr("Export CSV"), "quietAction")
         export.clicked.connect(self.export_logs)
         buttons.addStretch()
         buttons.addWidget(refresh)
@@ -2533,7 +2639,7 @@ class MainWindow(QMainWindow):
 
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 2, 0, 0)
-        save = self._text_button("fa5s.check", tr("Save settings"), "primaryAction")
+        save = make_text_button("fa5s.check", tr("Save settings"), "primaryAction")
         save.clicked.connect(self.save_settings)
         actions.addStretch()
         actions.addWidget(save)
@@ -2555,6 +2661,7 @@ class MainWindow(QMainWindow):
         self.audio_device_monitor.audioOutputsChanged.connect(self.refresh_audio_devices)
         self.audio.error.connect(self._audio_error)
         self.audio.announcement_started.connect(lambda: self.refresh_audio("announcement"))
+        self.audio.announcement_started.connect(self._sync_live_announcement_gain)
         self.audio.announcement_finished.connect(self.refresh_logs)
         self.audio.announcement_finished.connect(lambda: self.refresh_audio("announcement"))
         self.scheduler.announcement_due.connect(self.play_scheduled_announcement)
@@ -3017,7 +3124,12 @@ class MainWindow(QMainWindow):
                 if length_text is None:
                     length_text = self._format_track_length(item.path)
                 total_lengths.append(self._format_track_length(item.path))
-                values = [self.display_name(item.name), "", length_text]
+                display = self.display_name(item.name)
+                if item.gain_db:
+                    # A visible reminder that this one has been trimmed, so it
+                    # is not forgotten and mistaken for a fresh mismatch later.
+                    display += f"  ({item.gain_db:+.0f} dB)"
+                values = [display, "", length_text]
                 if columns > 3:
                     scheduled_time = time_map.get(item.id)
                     values.append(self._next_play_label(scheduled_time))
@@ -3131,7 +3243,56 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         label = tr("Show in Finder") if sys.platform == "darwin" else tr("Show in Explorer")
         menu.addAction(label).triggered.connect(lambda: self.reveal_in_file_manager(item.path))
+        if kind == "announcement":
+            volume_label = tr("Adjust volume…")
+            if item.gain_db:
+                volume_label += f"  ({item.gain_db:+.0f} dB)"
+            menu.addAction(volume_label).triggered.connect(lambda: self._open_gain_dialog(item))
         menu.exec(table.viewport().mapToGlobal(pos))
+
+    def _open_gain_dialog(self, item) -> None:
+        dialog = AudioGainDialog(item, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            gain = dialog.value()
+            self.database.set_audio_gain(item.id, gain)
+            self.database.log(
+                "announcement",
+                f"Reset {item.name} volume to match the others" if gain == 0
+                else f"Set {item.name} volume to {gain:+.0f} dB",
+            )
+            self.refresh_logs()
+            self.refresh_audio("announcement")
+
+    def _sync_live_announcement_gain(self) -> None:
+        """Re-read this recording's saved trim right as it actually starts.
+
+        A queued ad was given the trim it had at the moment the whole batch
+        was scheduled. If the operator fixes that recording's volume while an
+        earlier ad in the same batch is still playing, this is what makes the
+        correction reach it instead of it playing at the stale, already-queued
+        value. Skipped exactly once for a Preview-triggered play, so the trial
+        value on the dialog's slider is heard rather than immediately replaced.
+        """
+        if self._skip_next_gain_sync:
+            self._skip_next_gain_sync = False
+            return
+        path = self.audio.current_announcement
+        if path is None:
+            return
+        item = next((audio for audio in self.database.audio_items("announcement") if audio.path == path), None)
+        if item is not None:
+            self.audio.set_announcement_gain(item.gain_db)
+
+    def _preview_announcement_gain(self, item, gain_db: float) -> None:
+        """Play the recording at a trial gain, from the volume dialog's Preview.
+
+        Marked so the live gain-sync (which exists precisely to make a *saved*
+        edit reach an already-queued ad) does not also catch this one and
+        immediately overwrite the trial value with the saved one - that would
+        make Preview always just play the saved volume, silently.
+        """
+        self._skip_next_gain_sync = True
+        self.audio.play_announcement(item.path, manual=True, gain_db=gain_db)
 
     @staticmethod
     def reveal_in_file_manager(path: Path) -> None:
@@ -3323,7 +3484,7 @@ class MainWindow(QMainWindow):
             self.play_selected_announcement()
 
     def _play_announcement_now(self, item) -> None:
-        if self.audio.play_announcement(item.path, manual=True):
+        if self.audio.play_announcement(item.path, manual=True, gain_db=item.gain_db):
             queued = self.audio.current_announcement != item.path
             self.database.log("manual", f"Queued {item.name} after the scheduled ad" if queued else f"Playing {item.name}")
             self.refresh_logs()
@@ -3337,7 +3498,7 @@ class MainWindow(QMainWindow):
 
     def play_scheduled_announcement(self, item_id: int, name: str) -> None:
         item = next((audio for audio in self.database.audio_items("announcement") if audio.id == item_id), None)
-        if item and self.audio.play_announcement(item.path):
+        if item and self.audio.play_announcement(item.path, gain_db=item.gain_db):
             waiting = self.audio.queued_announcements()
             self.database.log("scheduled", f"Queued {name} (#{waiting} in line)" if waiting else f"Playing {name}")
         else:
