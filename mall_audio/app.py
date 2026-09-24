@@ -1667,7 +1667,7 @@ class AudioGainDialog(QDialog):
     go, not to hit an exact decibel figure.
     """
 
-    MIN_DB, MAX_DB = -24, 6
+    MIN_DB, MAX_DB = -30, 30
 
     def __init__(self, item, parent: QWidget) -> None:
         super().__init__(parent)
@@ -1696,7 +1696,7 @@ class AudioGainDialog(QDialog):
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(self.MIN_DB, self.MAX_DB)
         self.slider.setValue(round(max(self.MIN_DB, min(self.MAX_DB, item.gain_db))))
-        self.slider.setTickInterval(6)
+        self.slider.setTickInterval(10)
         self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.value_label = QLabel()
         self.value_label.setObjectName("fieldValue")
