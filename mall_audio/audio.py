@@ -10,7 +10,23 @@ from typing import Callable
 import numpy as np
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
-from PySide6.QtMultimedia import QAudioBuffer, QAudioBufferOutput, QAudioDevice, QAudioFormat, QAudioOutput, QMediaPlayer
+from PySide6.QtMultimedia import QAudioBuffer, QAudioBufferOutput, QAudioDecoder, QAudioDevice, QAudioFormat, QAudioOutput, QMediaPlayer
+
+# Music normaliser. Tracks are measured once (average RMS level in dBFS) and
+# then played with a per-track trim that brings them to this common level.
+# -16 dBFS RMS sits between loud modern pop (~-9) and quiet acoustic material
+# (~-22), so most of the correction is downward, which playback can always do;
+# a boost only has room to work while the master slider is below 100%.
+NORMALIZE_TARGET_DB = -16.0
+NORMALIZE_MAX_CUT_DB = -18.0
+NORMALIZE_MAX_BOOST_DB = 12.0
+
+
+def normalize_gain_db(loudness_db: float | None) -> float:
+    """Trim that brings a measured track to the target level, within limits."""
+    if loudness_db is None:
+        return 0.0
+    return max(NORMALIZE_MAX_CUT_DB, min(NORMALIZE_MAX_BOOST_DB, NORMALIZE_TARGET_DB - loudness_db))
 
 
 # A scheduled moment queues the entire voice-ad list, and two rules that land
@@ -130,6 +146,141 @@ class SpectrumAnalyzer:
         ).astype(np.float32)
 
 
+def _buffer_sum_squares(buffer: QAudioBuffer) -> tuple[float, int]:
+    """Sum of squared mono samples (full scale = 1.0) and how many there were."""
+    dtype = SAMPLE_DTYPES.get(buffer.format().sampleFormat())
+    if dtype is None or buffer.frameCount() == 0:
+        return 0.0, 0
+    samples = np.frombuffer(buffer.constData(), dtype=dtype)
+    channels = max(1, buffer.format().channelCount())
+    frames = samples.size // channels
+    if frames < 1:
+        return 0.0, 0
+    block = samples[: frames * channels].reshape(frames, channels)
+    if dtype is np.uint8:
+        mono = block.mean(axis=1, dtype=np.float64) / 127.5 - 1.0
+    elif dtype is np.float32:
+        mono = block.mean(axis=1, dtype=np.float64)
+    else:
+        mono = block.mean(axis=1, dtype=np.float64) / float(np.iinfo(dtype).max)
+    return float(np.dot(mono, mono)), frames
+
+
+class LoudnessScanner(QObject):
+    """Measure music files one at a time, in the background, without playing them.
+
+    Decoding runs inside the Qt event loop, so the interface and the music that
+    is on air are never blocked; a full-length track measures in a few seconds.
+    The result is the track's average RMS level in dBFS, stored by the caller so
+    each file is only ever measured once.
+    """
+
+    measured = Signal(int, object)      # item id, loudness in dBFS (float) or None when the file could not be read
+    progress = Signal(int, int)         # done so far, total in this run
+    finished = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._queue: deque[tuple[int, Path]] = deque()
+        self._queued_ids: set[int] = set()
+        self._current: tuple[int, Path] | None = None
+        self._sum_squares = 0.0
+        self._frames = 0
+        self._done = 0
+        self._total = 0
+        # One decoder per file: the FFmpeg decoder does not reliably accept a
+        # new source after it has finished or failed on the previous one.
+        self._decoder: QAudioDecoder | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self._current is not None or bool(self._queue)
+
+    @property
+    def remaining(self) -> int:
+        return len(self._queue) + (1 if self._current else 0)
+
+    def enqueue(self, item_id: int, path: Path) -> None:
+        if item_id in self._queued_ids or (self._current and self._current[0] == item_id):
+            return
+        self._queue.append((item_id, path))
+        self._queued_ids.add(item_id)
+        self._total += 1
+        if self._current is None:
+            self._start_next()
+
+    def cancel(self) -> None:
+        self._queue.clear()
+        self._queued_ids.clear()
+        if self._current is not None:
+            self._discard_decoder()
+            self._current = None
+        self._done = self._total = 0
+
+    def _discard_decoder(self) -> None:
+        decoder, self._decoder = self._decoder, None
+        if decoder is not None:
+            decoder.bufferReady.disconnect(self._on_buffer)
+            decoder.finished.disconnect(self._on_finished)
+            decoder.error.disconnect(self._on_error)
+            decoder.stop()
+            decoder.deleteLater()
+
+    def _start_next(self) -> None:
+        if not self._queue:
+            self._current = None
+            self._done = self._total = 0
+            self.finished.emit()
+            return
+        item_id, path = self._queue.popleft()
+        self._queued_ids.discard(item_id)
+        self._current = (item_id, path)
+        self._sum_squares = 0.0
+        self._frames = 0
+        if not path.exists():
+            self._complete(None)
+            return
+        self._decoder = QAudioDecoder(self)
+        self._decoder.bufferReady.connect(self._on_buffer)
+        self._decoder.finished.connect(self._on_finished)
+        self._decoder.error.connect(self._on_error)
+        self._decoder.setSource(QUrl.fromLocalFile(str(path)))
+        self._decoder.start()
+
+    def _on_buffer(self) -> None:
+        decoder = self._decoder
+        if decoder is None:
+            return
+        while decoder.bufferAvailable():
+            squares, frames = _buffer_sum_squares(decoder.read())
+            self._sum_squares += squares
+            self._frames += frames
+
+    def _on_finished(self) -> None:
+        if self._current is None:
+            return
+        if self._frames == 0:
+            self._complete(None)
+            return
+        rms = (self._sum_squares / self._frames) ** 0.5
+        self._complete(20 * np.log10(max(rms, 1e-6)))
+
+    def _on_error(self, *_: object) -> None:
+        if self._current is not None:
+            self._complete(None)
+
+    def _complete(self, loudness_db: float | None) -> None:
+        item_id = self._current[0] if self._current else None
+        self._current = None
+        self._discard_decoder()
+        self._done += 1
+        if item_id is not None:
+            self.measured.emit(item_id, None if loudness_db is None else float(loudness_db))
+        self.progress.emit(self._done, self._total)
+        # Let the decoder settle before it is given the next file.
+        QTimer.singleShot(0, self._start_next)
+
+
 class AudioController(QObject):
     status_changed = Signal(str)
     music_track_changed = Signal(str)
@@ -159,6 +310,10 @@ class AudioController(QObject):
         self.track_index = 0
         self.repeat_all = True
         self.shuffle = False
+        # Music normaliser: per-track trims (dB) keyed by file, applied on top
+        # of the master music volume while `normalize` is on.
+        self.normalize = False
+        self.music_gains: dict[Path, float] = {}
         # A bag, not a coin toss: every track plays once before any repeats.
         # Drawing at random each time replays the same song back to back often
         # enough that it reads as a fault rather than as shuffle.
@@ -195,7 +350,7 @@ class AudioController(QObject):
         self._fade_progress = 0
         self._fade_steps = 1
         self._fade_done: Callable[[], None] | None = None
-        self.music_output.setVolume(self.music_volume)
+        self.music_output.setVolume(self._music_level())
         self.announcement_output.setVolume(self.announcement_volume)
         self.music_player.mediaStatusChanged.connect(self._music_status)
         self.announcement_player.mediaStatusChanged.connect(self._announcement_status)
@@ -228,6 +383,36 @@ class AudioController(QObject):
         self._shuffle_bag.clear()
         self._shuffle_history.clear()
 
+    def set_music_gains(self, gains: dict[Path, float]) -> None:
+        """Replace the normaliser's per-track trims and re-level what is on air."""
+        self.music_gains = dict(gains)
+        self._apply_music_level()
+
+    def set_normalize(self, enabled: bool) -> None:
+        self.normalize = enabled
+        self._apply_music_level()
+
+    def current_track(self) -> Path | None:
+        if not self.music_files:
+            return None
+        return self.music_files[self.track_index % len(self.music_files)]
+
+    def _music_level(self) -> float:
+        """Master music volume combined with the current track's normaliser trim.
+
+        Volume cannot exceed the device's unity gain, so a boost only has room
+        to work while the master slider is below 100%; cuts always apply.
+        """
+        if not self.normalize:
+            return self.music_volume
+        gain_db = self.music_gains.get(self.current_track() or Path(), 0.0)
+        return max(0.0, min(1.0, self.music_volume * 10 ** (gain_db / 20)))
+
+    def _apply_music_level(self) -> None:
+        """Push the current level to the output, unless an ad has the music ducked."""
+        if not self.paused_for_announcement and not self._fade_timer.isActive():
+            self.music_output.setVolume(self._music_level())
+
     def configure(self, music_volume: float, announcement_volume: float, duck_music: bool, fade_duration_ms: int) -> None:
         self.music_volume = music_volume
         self.announcement_volume = announcement_volume
@@ -235,7 +420,7 @@ class AudioController(QObject):
         self.fade_duration_ms = fade_duration_ms
         self._apply_announcement_volume()
         if not self.paused_for_announcement:
-            self.music_output.setVolume(music_volume)
+            self.music_output.setVolume(self._music_level())
 
     def set_announcement_volume(self, volume: float) -> None:
         self.announcement_volume = max(0.0, min(1.0, volume))
@@ -304,7 +489,7 @@ class AudioController(QObject):
         """Change the live music level, including the level restored after an ad."""
         self.music_volume = max(0.0, min(1.0, volume))
         if not self.paused_for_announcement:
-            self.music_output.setVolume(self.music_volume)
+            self.music_output.setVolume(self._music_level())
 
     def set_audio_device(self, device: QAudioDevice) -> None:
         self.music_output.setDevice(device)
@@ -347,7 +532,7 @@ class AudioController(QObject):
         self._fade_timer.stop()
         self.paused_for_announcement = False
         self._music_ended_during_announcement = False
-        self.music_output.setVolume(self.music_volume)
+        self.music_output.setVolume(self._music_level())
         self.announcement_finished.emit()
 
     def play_music(self) -> None:
@@ -368,6 +553,10 @@ class AudioController(QObject):
         self._music_takes_over()
         track = self.music_files[self.track_index % len(self.music_files)]
         self.music_player.setSource(QUrl.fromLocalFile(str(track)))
+        # Each track carries its own normaliser trim, so the level is set per
+        # track, before the first sample plays rather than after.
+        if not self.paused_for_announcement:
+            self.music_output.setVolume(self._music_level())
         self.music_player.play()
         self.music_track_changed.emit(track.name)
         self.status_changed.emit("Background music playing")
@@ -559,9 +748,9 @@ class AudioController(QObject):
             elif self.music_player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
                 self.music_player.play()
             if self.duck_music:
-                self._fade_to_volume(self.music_volume)
+                self._fade_to_volume(self._music_level())
             else:
-                self.music_output.setVolume(self.music_volume)
+                self.music_output.setVolume(self._music_level())
         self.paused_for_announcement = False
         self._music_ended_during_announcement = False
         self._emit_music_status()

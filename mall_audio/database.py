@@ -66,6 +66,7 @@ class Database:
         """)
         self._add_playlist_order()
         self._add_gain_column()
+        self._add_loudness_column()
         self._adopt_per_recording_rules()
         self.connection.commit()
 
@@ -111,6 +112,13 @@ class Database:
         if "gain_db" in columns:
             return
         self.connection.execute("ALTER TABLE audio_items ADD COLUMN gain_db REAL NOT NULL DEFAULT 0.0")
+
+    def _add_loudness_column(self) -> None:
+        """Measured level for the music normaliser; NULL until a file is scanned."""
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(audio_items)")}
+        if "loudness_db" in columns:
+            return
+        self.connection.execute("ALTER TABLE audio_items ADD COLUMN loudness_db REAL")
 
     def add_audio(self, path: str, kind: str) -> int:
         return self.add_audio_batch([path], kind)
@@ -180,10 +188,15 @@ class Database:
         rows = self.connection.execute(
             "SELECT * FROM audio_items WHERE kind = ? ORDER BY position, name", (kind,)
         ).fetchall()
-        return [AudioItem(r["id"], r["name"], Path(r["path"]), r["kind"], r["gain_db"]) for r in rows]
+        return [AudioItem(r["id"], r["name"], Path(r["path"]), r["kind"], r["gain_db"], r["loudness_db"]) for r in rows]
 
     def set_audio_gain(self, item_id: int, gain_db: float) -> None:
         self.connection.execute("UPDATE audio_items SET gain_db = ? WHERE id = ?", (gain_db, item_id))
+        self.connection.commit()
+        self.catalog_revision += 1
+
+    def set_audio_loudness(self, item_id: int, loudness_db: float | None) -> None:
+        self.connection.execute("UPDATE audio_items SET loudness_db = ? WHERE id = ?", (loudness_db, item_id))
         self.connection.commit()
         self.catalog_revision += 1
 

@@ -16,6 +16,9 @@ class AudioItem:
     # exceed the device's unity gain, so boosting a quiet recording only helps
     # while the master slider still has headroom below 100%.
     gain_db: float = 0.0
+    # Measured average level of the file in dBFS (RMS), or None until the
+    # normaliser has scanned it. Music only; voice ads are trimmed by hand.
+    loudness_db: float | None = None
 
 
 @dataclass(frozen=True)

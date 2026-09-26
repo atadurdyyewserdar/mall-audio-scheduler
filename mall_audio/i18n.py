@@ -54,6 +54,9 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "Mix: off": "Garyşdyr: ýapyk",
         "Repeat all: on": "Ählisini gaýtala: açyk",
         "Repeat all: off": "Ählisini gaýtala: ýapyk",
+        "Normalize volume: on": "Sesi deňle: açyk",
+        "Normalize volume: off": "Sesi deňle: ýapyk",
+        "Normalize volume: on — measuring {count} tracks…": "Sesi deňle: açyk — {count} aýdym ölçenýär…",
         "No scheduled voice ad": "Meýilleşdirilen ses yglany ýok",
         "Next: {name} — {when}": "Indiki: {name} — {when}",
         # Playlist panels
@@ -253,6 +256,9 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "Mix: off": "Вперемешку: выкл.",
         "Repeat all: on": "Повтор всех: вкл.",
         "Repeat all: off": "Повтор всех: выкл.",
+        "Normalize volume: on": "Выравнивание громкости: вкл.",
+        "Normalize volume: off": "Выравнивание громкости: выкл.",
+        "Normalize volume: on — measuring {count} tracks…": "Выравнивание громкости: вкл. — измеряется треков: {count}…",
         "No scheduled voice ad": "Нет запланированных объявлений",
         "Next: {name} — {when}": "Далее: {name} — {when}",
         # Playlist panels

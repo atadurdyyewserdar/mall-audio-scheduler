@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .audio import AudioController
+from .audio import AudioController, LoudnessScanner, normalize_gain_db
 from .autostart import is_enabled as autostart_enabled, set_enabled as set_autostart_enabled
 from .database import Database
 from .i18n import LANGUAGES, current_language, set_language, tr
@@ -1929,6 +1929,13 @@ class MainWindow(QMainWindow):
         self.database = Database(application_data_path())
         set_language(self.database.setting("language", "en"))
         self.audio = AudioController()
+        self.audio.set_normalize(self.database.setting("normalize", "false") == "true")
+        # Measures music files for the normaliser in the background; results
+        # are stored so each file is only measured once.
+        self.loudness_scanner = LoudnessScanner()
+        self.loudness_scanner.measured.connect(self._on_loudness_measured)
+        self.loudness_scanner.progress.connect(lambda *_: self._update_normalize_button())
+        self.loudness_scanner.finished.connect(self._on_loudness_scan_finished)
         self.scheduler = Scheduler(self.database)
         self.current_music_item_id: int | None = None
         self.search_fields: dict[str, QLineEdit] = {}
@@ -2507,12 +2514,21 @@ class MainWindow(QMainWindow):
         self.repeat_all_button.setChecked(True)
         self.repeat_all_button.toggled.connect(self.toggle_repeat_all)
         self.toggle_repeat_all(True)
+        # Normaliser: evens out loud and quiet tracks. Music only - voice ads
+        # are trimmed one by one from their own menu.
+        normalizing = self.audio.normalize
+        self.normalize_button = self._icon_button("fa5s.sliders-h", tr("Normalize volume: on"), "repeatAll")
+        self.normalize_button.setCheckable(True)
+        self.normalize_button.setChecked(normalizing)
+        self.normalize_button.toggled.connect(self.toggle_normalize)
+        self._update_normalize_button()
         sync = self._icon_button("fa5s.sync-alt", tr("Sync playlist with its folder"), "repeatAll")
         sync.setIcon(qta.icon("fa5s.sync-alt", color="#315beb"))
         sync.clicked.connect(lambda _=False, button=sync: self.sync_playlist("music", button))
         header.addWidget(title)
         header.addStretch()
         header.addWidget(sync)
+        header.addWidget(self.normalize_button)
         header.addWidget(self.shuffle_button)
         header.addWidget(self.repeat_all_button)
         panel.addLayout(header)
@@ -3284,6 +3300,9 @@ class MainWindow(QMainWindow):
             self._fill_audio_table(table, items, time_map, playing_item_id)
         if kind == "music":
             self.audio.set_music([item.path for item in items])
+            self._push_music_gains(items)
+            if self.audio.normalize:
+                self._queue_loudness_scan(items)
         else:
             live = self.audio.current_announcement
             self.ad_track_label.setText(self.display_name(live.name) if live else tr("Nothing playing"))
@@ -3593,6 +3612,59 @@ class MainWindow(QMainWindow):
         label = tr("Mix: on") if enabled else tr("Mix: off")
         self.shuffle_button.setToolTip(label)
         self.shuffle_button.setAccessibleName(label)
+
+    def toggle_normalize(self, enabled: bool) -> None:
+        self.database.set_setting("normalize", "true" if enabled else "false")
+        self.audio.set_normalize(enabled)
+        if enabled:
+            self._queue_loudness_scan(self.database.audio_items("music"))
+            self.database.log("music", "Volume normaliser on")
+        else:
+            self.loudness_scanner.cancel()
+            self.database.log("music", "Volume normaliser off")
+        self._update_normalize_button()
+
+    def _update_normalize_button(self) -> None:
+        button = getattr(self, "normalize_button", None)
+        if button is None:
+            return
+        enabled = self.audio.normalize
+        remaining = self.loudness_scanner.remaining if enabled else 0
+        # Amber while still measuring: the level is not yet even across the list.
+        colour = "#e0a100" if remaining else ("#315beb" if enabled else "#9aa1ab")
+        button.setIcon(qta.icon("fa5s.sliders-h", color=colour))
+        if remaining:
+            label = tr("Normalize volume: on — measuring {count} tracks…", count=remaining)
+        else:
+            label = tr("Normalize volume: on") if enabled else tr("Normalize volume: off")
+        button.setToolTip(label)
+        button.setAccessibleName(label)
+
+    def _queue_loudness_scan(self, items: list) -> None:
+        for item in items:
+            if item.loudness_db is None:
+                self.loudness_scanner.enqueue(item.id, item.path)
+        self._update_normalize_button()
+
+    def _push_music_gains(self, items: list) -> None:
+        self.audio.set_music_gains({
+            item.path: normalize_gain_db(item.loudness_db) for item in items if item.loudness_db is not None
+        })
+
+    def _on_loudness_measured(self, item_id: int, loudness_db: object) -> None:
+        if loudness_db is None:
+            # Unreadable file: play it untouched rather than measuring it again
+            # on every start-up. Removing and re-adding the track retries.
+            self.database.set_audio_loudness(item_id, 0.0)
+            self.database.log("music", f"Normaliser could not measure item {item_id}; playing it unchanged")
+        else:
+            self.database.set_audio_loudness(item_id, float(loudness_db))
+        self._push_music_gains(self.database.audio_items("music"))
+
+    def _on_loudness_scan_finished(self) -> None:
+        self._update_normalize_button()
+        if self.audio.normalize:
+            self.database.log("music", "Normaliser finished measuring the music playlist")
 
     def toggle_repeat_all(self, enabled: bool) -> None:
         self.audio.repeat_all = enabled
