@@ -5,3 +5,9 @@ build/
 dist/
 *.spec
 .DS_Store
+
+# Licence signing key - developer only, never commit or ship
+tools/keys/
+*.key
+*.egg-info/
+

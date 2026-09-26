@@ -177,6 +177,45 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "Audio files (*.mp3 *.wav *.aac *.m4a *.ogg *.flac)": "Ses faýllary (*.mp3 *.wav *.aac *.m4a *.ogg *.flac)",
         "Export playback log": "Oýnatma žurnalyny eksport et",
         "CSV files (*.csv)": "CSV faýllary (*.csv)",
+        # Licence
+        "Activate {app}": "{app} işjeňleşdir",
+        "Licence key": "Lisenziýa açary",
+        "Licence": "Lisenziýa",
+        "Licensed to": "Lisenziýa eýesi",
+        "Valid until": "Möhleti",
+        "Lifetime": "Möhletsiz",
+        "Not activated": "Işjeňleşdirilmedik",
+        "Expired on {date}": "{date} senesinde gutardy",
+        "{date}  ({days} days left)": "{date}  ({days} gün galdy)",
+        "This computer's ID": "Bu kompýuteriň ID-si",
+        "Copy": "Kopiýala",
+        "Change licence key…": "Lisenziýa açaryny çalyş…",
+        "Load from file…": "Faýldan ýükle…",
+        "Cancel": "Ýatyr",
+        "Quit": "Çyk",
+        "Activate": "Işjeňleşdir",
+        "Choose a licence file": "Lisenziýa faýlyny saýlaň",
+        "Licence files (*.key *.txt);;All files (*)": "Lisenziýa faýllary (*.key *.txt);;Ähli faýllar (*)",
+        "Send this ID to your supplier if they ask for it; a key can be tied to this computer.":
+            "Üpjün ediji sorasa, bu ID-ni oňa iberiň; açar şu kompýutere baglanyp bilner.",
+        "This copy has not been activated yet. Enter the licence key you received.":
+            "Bu nusga heniz işjeňleşdirilmedik. Alan lisenziýa açaryňyzy giriziň.",
+        "The licence for this copy has expired. Enter a new licence key to continue.":
+            "Bu nusganyň lisenziýasynyň möhleti gutardy. Dowam etmek üçin täze açar giriziň.",
+        "This licence key was issued for a different computer.": "Bu lisenziýa açary başga kompýuter üçin berlen.",
+        "The saved licence key is not genuine.": "Ýatda saklanan lisenziýa açary hakyky däl.",
+        "The saved licence key is damaged.": "Ýatda saklanan lisenziýa açary zaýalanan.",
+        "Paste the licence key first.": "Ilki lisenziýa açaryny goýuň.",
+        "This key has already expired.": "Bu açaryň möhleti eýýäm gutardy.",
+        "This key was issued for a different computer. Its ID must match the one shown above.":
+            "Bu açar başga kompýuter üçin berlen. ID ýokarda görkezilen bilen gabat gelmeli.",
+        "This key is not genuine. Check that it was copied completely.":
+            "Bu açar hakyky däl. Doly kopiýalanandygyny barlaň.",
+        "This does not look like a licence key. Check that it was copied completely.":
+            "Bu lisenziýa açaryna meňzemeýär. Doly kopiýalanandygyny barlaň.",
+        "The key is valid but could not be saved on this computer.":
+            "Açar dogry, ýöne bu kompýuterde ýatda saklanyp bilinmedi.",
+        "That file could not be read.": "Bu faýl okalyp bilinmedi.",
     },
     "ru": {
         # Navigation and chrome
@@ -337,6 +376,45 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "Audio files (*.mp3 *.wav *.aac *.m4a *.ogg *.flac)": "Аудиофайлы (*.mp3 *.wav *.aac *.m4a *.ogg *.flac)",
         "Export playback log": "Экспорт журнала воспроизведения",
         "CSV files (*.csv)": "Файлы CSV (*.csv)",
+        # Licence
+        "Activate {app}": "Активация {app}",
+        "Licence key": "Лицензионный ключ",
+        "Licence": "Лицензия",
+        "Licensed to": "Владелец лицензии",
+        "Valid until": "Действует до",
+        "Lifetime": "Бессрочно",
+        "Not activated": "Не активировано",
+        "Expired on {date}": "Истекла {date}",
+        "{date}  ({days} days left)": "{date}  (осталось дней: {days})",
+        "This computer's ID": "ID этого компьютера",
+        "Copy": "Копировать",
+        "Change licence key…": "Сменить лицензионный ключ…",
+        "Load from file…": "Загрузить из файла…",
+        "Cancel": "Отмена",
+        "Quit": "Выход",
+        "Activate": "Активировать",
+        "Choose a licence file": "Выберите файл лицензии",
+        "Licence files (*.key *.txt);;All files (*)": "Файлы лицензии (*.key *.txt);;Все файлы (*)",
+        "Send this ID to your supplier if they ask for it; a key can be tied to this computer.":
+            "Сообщите этот ID поставщику, если он его запросит: ключ может быть привязан к этому компьютеру.",
+        "This copy has not been activated yet. Enter the licence key you received.":
+            "Эта копия ещё не активирована. Введите полученный лицензионный ключ.",
+        "The licence for this copy has expired. Enter a new licence key to continue.":
+            "Срок действия лицензии истёк. Введите новый лицензионный ключ, чтобы продолжить.",
+        "This licence key was issued for a different computer.": "Этот лицензионный ключ выдан для другого компьютера.",
+        "The saved licence key is not genuine.": "Сохранённый лицензионный ключ не является подлинным.",
+        "The saved licence key is damaged.": "Сохранённый лицензионный ключ повреждён.",
+        "Paste the licence key first.": "Сначала вставьте лицензионный ключ.",
+        "This key has already expired.": "Срок действия этого ключа уже истёк.",
+        "This key was issued for a different computer. Its ID must match the one shown above.":
+            "Этот ключ выдан для другого компьютера. ID должен совпадать с показанным выше.",
+        "This key is not genuine. Check that it was copied completely.":
+            "Этот ключ не является подлинным. Проверьте, что он скопирован полностью.",
+        "This does not look like a licence key. Check that it was copied completely.":
+            "Это не похоже на лицензионный ключ. Проверьте, что он скопирован полностью.",
+        "The key is valid but could not be saved on this computer.":
+            "Ключ верный, но его не удалось сохранить на этом компьютере.",
+        "That file could not be read.": "Не удалось прочитать этот файл.",
     },
 }
 

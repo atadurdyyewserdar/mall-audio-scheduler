@@ -18,7 +18,7 @@ from PySide6.QtMultimedia import QMediaDevices, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-    QLineEdit, QMenu, QPushButton, QSizePolicy, QSlider, QToolTip, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionComboBox, QStyleOptionSlider, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTimeEdit, QHeaderView,
+    QLineEdit, QMenu, QPlainTextEdit, QPushButton, QSizePolicy, QSlider, QToolTip, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionComboBox, QStyleOptionSlider, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTimeEdit, QHeaderView,
     QVBoxLayout, QWidget,
 )
 
@@ -26,6 +26,7 @@ from .audio import AudioController
 from .autostart import is_enabled as autostart_enabled, set_enabled as set_autostart_enabled
 from .database import Database
 from .i18n import LANGUAGES, current_language, set_language, tr
+from .license import License, LicenseError, check_key, current_license, machine_id, save_key
 from .scheduler import Scheduler
 from .timeline import audio_duration_seconds, upcoming_occurrences, voice_ad_start_times
 
@@ -1755,6 +1756,138 @@ class AudioGainDialog(QDialog):
         super().keyPressEvent(event)
 
 
+class LicenseDialog(QDialog):
+    """Enter or replace the licence key.
+
+    Shown on its own before the main window when there is no usable key, and
+    from Settings to swap a key on an activated installation. Fully offline:
+    the key is verified against the public key compiled into the app.
+    """
+
+    REASONS = {
+        "missing": "This copy has not been activated yet. Enter the licence key you received.",
+        "expired": "The licence for this copy has expired. Enter a new licence key to continue.",
+        "machine": "This licence key was issued for a different computer.",
+        "signature": "The saved licence key is not genuine.",
+        "format": "The saved licence key is damaged.",
+    }
+
+    def __init__(self, reason: str | None, parent: QWidget | None = None, allow_cancel: bool = False) -> None:
+        super().__init__(parent)
+        self.licence: License | None = None
+        self.setWindowTitle(tr("Activate {app}", app=APP_NAME))
+        self.setModal(True)
+        self.setMinimumWidth(560)
+        icon = asset_path("logo.png")
+        if icon.exists():
+            self.setWindowIcon(QIcon(str(icon)))
+        # Styled on its own: at first launch there is no MainWindow stylesheet
+        # to inherit from yet.
+        self.setStyleSheet("""
+            QDialog, QWidget { background: #ffffff; color: #1f2226; font-size: 13px; }
+            QLabel#ruleTitle { font-size: 16px; font-weight: 750; }
+            QLabel#fieldLabel { color: #6d7480; font-size: 11px; font-weight: 700; }
+            QLabel#cardHint { color: #8b9097; font-size: 11px; }
+            QLabel#errorText { color: #c0392b; font-size: 12px; font-weight: 600; }
+            QLabel#machineId { font-family: Consolas, monospace; font-size: 15px; font-weight: 700; letter-spacing: 1px; color: #315beb; }
+            QPlainTextEdit { border: 1px solid #d9dce2; padding: 6px; font-family: Consolas, monospace; font-size: 12px; }
+            QPlainTextEdit:focus { border-color: #315beb; }
+            QPushButton#primaryAction { background: #315beb; color: #ffffff; font-size: 12px; font-weight: 700; padding: 6px 14px; min-height: 26px; border: 0; }
+            QPushButton#primaryAction:hover { background: #274ac0; }
+            QPushButton#quietAction { background: #ffffff; color: #4a505a; border: 1px solid #d9dce2; font-size: 12px; font-weight: 700; padding: 6px 12px; min-height: 26px; }
+            QPushButton#quietAction:hover { background: #f5f6f8; border-color: #b9c0cb; }
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(12)
+
+        title = QLabel(tr("Licence key"))
+        title.setObjectName("ruleTitle")
+        layout.addWidget(title)
+        intro = QLabel(tr(self.REASONS.get(reason or "missing", self.REASONS["missing"])))
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        machine_row = QHBoxLayout()
+        machine_row.setSpacing(10)
+        machine_label = QLabel(tr("This computer's ID"))
+        machine_label.setObjectName("fieldLabel")
+        self.machine_value = QLabel(machine_id())
+        self.machine_value.setObjectName("machineId")
+        self.machine_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        copy = make_text_button("fa5s.copy", tr("Copy"), "quietAction")
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(self.machine_value.text()))
+        machine_row.addWidget(machine_label)
+        machine_row.addWidget(self.machine_value)
+        machine_row.addStretch()
+        machine_row.addWidget(copy)
+        layout.addLayout(machine_row)
+        machine_hint = QLabel(tr("Send this ID to your supplier if they ask for it; a key can be tied to this computer."))
+        machine_hint.setObjectName("cardHint")
+        machine_hint.setWordWrap(True)
+        layout.addWidget(machine_hint)
+
+        key_label = QLabel(tr("Licence key"))
+        key_label.setObjectName("fieldLabel")
+        layout.addWidget(key_label)
+        self.key_edit = QPlainTextEdit()
+        self.key_edit.setPlaceholderText("MAS1-…")
+        self.key_edit.setFixedHeight(84)
+        self.key_edit.textChanged.connect(lambda: self.error.setText(""))
+        layout.addWidget(self.key_edit)
+        self.error = QLabel("")
+        self.error.setObjectName("errorText")
+        self.error.setWordWrap(True)
+        layout.addWidget(self.error)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        load = make_text_button("fa5s.folder-open", tr("Load from file…"), "quietAction")
+        load.clicked.connect(self._load_file)
+        leave = make_text_button("fa5s.times", tr("Cancel") if allow_cancel else tr("Quit"), "quietAction")
+        leave.clicked.connect(self.reject)
+        activate = make_text_button("fa5s.check", tr("Activate"), "primaryAction")
+        activate.clicked.connect(self._activate)
+        buttons.addWidget(load)
+        buttons.addStretch()
+        buttons.addWidget(leave)
+        buttons.addWidget(activate)
+        layout.addLayout(buttons)
+
+    def _load_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, tr("Choose a licence file"), "", tr("Licence files (*.key *.txt);;All files (*)"))
+        if not path:
+            return
+        try:
+            self.key_edit.setPlainText(Path(path).read_text(encoding="utf-8-sig").strip())
+        except OSError:
+            self.error.setText(tr("That file could not be read."))
+            return
+        self._activate()
+
+    def _activate(self) -> None:
+        text = self.key_edit.toPlainText().strip()
+        if not text:
+            self.error.setText(tr("Paste the licence key first."))
+            return
+        try:
+            licence = check_key(text)
+        except LicenseError as exc:
+            self.error.setText(tr({
+                "expired": "This key has already expired.",
+                "machine": "This key was issued for a different computer. Its ID must match the one shown above.",
+                "signature": "This key is not genuine. Check that it was copied completely.",
+            }.get(exc.code, "This does not look like a licence key. Check that it was copied completely.")))
+            return
+        try:
+            save_key(text)
+        except OSError:
+            self.error.setText(tr("The key is valid but could not be saved on this computer."))
+            return
+        self.licence = licence
+        self.accept()
+
+
 class EvenSplitRow(QWidget):
     """Lays out two columns side by side at an exact 50/50 width split.
 
@@ -1812,6 +1945,46 @@ class MainWindow(QMainWindow):
         self.scheduler.start()
         # A beat after the window is up, so the audio device has settled.
         QTimer.singleShot(500, self._autoplay_if_enabled)
+        # An unattended installation may run for months; catch an expiry
+        # without waiting for the next restart.
+        self.license_clock = QTimer(self)
+        self.license_clock.setInterval(60 * 60 * 1000)
+        self.license_clock.timeout.connect(self._recheck_license)
+        self.license_clock.start()
+
+    def _recheck_license(self) -> None:
+        _, reason = current_license()
+        if reason is None:
+            return
+        self.audio.pause_music()
+        self.database.log("license", f"Licence check failed: {reason}")
+        dialog = LicenseDialog(reason, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.database.log("license", f"Activated for {dialog.licence.customer}")
+            self._refresh_license_card()
+            self.audio.play_music()
+        else:
+            self.close()
+
+    def _change_license(self) -> None:
+        dialog = LicenseDialog(None, self, allow_cancel=True)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.database.log("license", f"Activated for {dialog.licence.customer}")
+            self._refresh_license_card()
+
+    def _refresh_license_card(self) -> None:
+        licence, reason = current_license()
+        if licence is None:
+            self.license_customer.setText(tr("Not activated"))
+            self.license_valid.setText("—")
+            return
+        self.license_customer.setText(licence.customer)
+        if licence.lifetime:
+            self.license_valid.setText(tr("Lifetime"))
+        elif reason == "expired":
+            self.license_valid.setText(tr("Expired on {date}", date=licence.expires.isoformat()))
+        else:
+            self.license_valid.setText(tr("{date}  ({days} days left)", date=licence.expires.isoformat(), days=licence.days_left()))
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -2636,6 +2809,25 @@ class MainWindow(QMainWindow):
         behaviour_column.addWidget(self.autostart)
         behaviour_column.addWidget(self.autoplay)
         column_layout.addWidget(behaviour_card)
+
+        license_card, license_column = self._section(tr("Licence"))
+        license_form = self._settings_form()
+        self.license_customer = QLabel()
+        self.license_valid = QLabel()
+        machine_value = QLabel(machine_id())
+        machine_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        license_form.addRow(tr("Licensed to"), self.license_customer)
+        license_form.addRow(tr("Valid until"), self.license_valid)
+        license_form.addRow(tr("This computer's ID"), machine_value)
+        license_column.addLayout(license_form)
+        license_actions = QHBoxLayout()
+        change_key = make_text_button("fa5s.key", tr("Change licence key…"), "quietAction")
+        change_key.clicked.connect(self._change_license)
+        license_actions.addWidget(change_key)
+        license_actions.addStretch()
+        license_column.addLayout(license_actions)
+        self._refresh_license_card()
+        column_layout.addWidget(license_card)
 
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 2, 0, 0)
@@ -3561,6 +3753,14 @@ class MainWindow(QMainWindow):
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    # The activation window appears before MainWindow, so it needs the saved
+    # language on its own; MainWindow reads the same setting again later.
+    set_language(Database(application_data_path()).setting("language", "en"))
+    _, reason = current_license()
+    if reason is not None:
+        dialog = LicenseDialog(reason)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

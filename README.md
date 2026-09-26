@@ -43,6 +43,35 @@ The **Settings** page includes these local, persisted controls:
 - Audio-output device selection (choose the dedicated USB interface in production)
 - Start automatically when the computer user logs in (macOS and Windows)
 
+## Licence keys
+
+The app refuses to run until a licence key is entered, and re-checks it every
+hour while running. Keys are verified offline against a public key compiled
+into the app (`PUBLIC_KEY_HEX` in `mall_audio/license.py`); the matching
+private key lives only on the developer's machine in `tools/keys/` and is
+git-ignored. Never commit or ship that folder.
+
+Generate keys with the developer tool (from the project root):
+
+```bat
+.venv\Scripts\python tools\make_license.py --customer "Berkarar Mall"
+.venv\Scripts\python tools\make_license.py --customer "Berkarar Mall" --expires 2027-12-31
+.venv\Scripts\python tools\make_license.py --customer "Berkarar Mall" --machine 1A2B-3C4D-5E6F
+.venv\Scripts\python tools\make_license.py --customer "Berkarar Mall" --out "Berkarar Mall.key"
+.venv\Scripts\python tools\make_license.py --verify MAS1-...
+```
+
+- No `--expires` means a lifetime key.
+- `--machine` locks the key to one PC. The customer reads the machine ID from
+  the activation window (or Settings → Licence) and sends it to you.
+- Send the key as text or as a `.key` file; the activation window accepts either.
+- The key is stored in `%APPDATA%\Mall Audio Scheduler\license.key`. Delete it
+  to return the installation to the unactivated state.
+
+Setting up a new developer machine: run `make_license.py --init`, paste the
+printed public key into `mall_audio/license.py`, rebuild. Keys made with the
+old private key stop working in the new build, so keep one key pair per product.
+
 ## Build a distributable
 
 Build on the operating system you are targeting - PyInstaller does not
